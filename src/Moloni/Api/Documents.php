@@ -165,6 +165,11 @@ class Documents
             return false;
         }
 
+        return self::getDocumentTypeByCode($type);
+    }
+
+    public static function getDocumentTypeByCode($type)
+    {
         switch ($type) {
             default:
             case "FT":

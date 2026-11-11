@@ -4,6 +4,7 @@ namespace Moloni\Admin;
 
 use Exception;
 use Moloni\Core\Storage;
+use Moloni\Curl;
 use Moloni\Exceptions\APIException;
 use Moloni\Exceptions\DocumentException;
 use Moloni\Exceptions\DocumentWarning;
@@ -12,6 +13,7 @@ use Moloni\Model\WhmcsDB;
 use Moloni\Services\Invoices\CreateDocumentFromInvoice;
 use Moloni\Services\Logs\DeleteLogs;
 use Moloni\Services\Logs\FetchLogs;
+use Moloni\Services\Documents\FetchDocuments;
 use Moloni\Start;
 use Moloni\Error;
 use WHMCS\Database\Capsule;
@@ -22,8 +24,19 @@ class Dispatcher
     protected $moloni;
     protected $template = 'login';
     protected $message = [];
+    protected $downloadUrl;
 
     public function dispatch($parameters)
+    {
+        if (in_array($_GET['action'] ?? '', ['docs', 'config', 'pdf'], true)) {
+            return Curl::withReadBudget(function () use ($parameters) {
+                return $this->render($parameters);
+            });
+        }
+        return $this->render($parameters);
+    }
+
+    private function render($parameters)
     {
         $this->moloni = new Start();
         ob_start();
@@ -57,6 +70,23 @@ class Dispatcher
         $this->moloni = new Start();
 
         switch ($_GET['action'] ?? '') {
+            case 'docs':
+                try {
+                    $response = Curl::withReadBudget(function () {
+                        if (!$this->moloni->hasValidAuthentication() || !$this->moloni->hasValidCompany()) {
+                            throw new APIException('Ligação Moloni indisponível. Abra o módulo para verificar a ligação.', ['kind' => 'authentication'], 'documents');
+                        }
+                        $this->moloni->variablesDefine();
+                        return (new FetchDocuments($_GET))->run();
+                    });
+                } catch (APIException $e) {
+                    http_response_code(503);
+                    LoggerFacade::error('Erro ao consultar documentos.', [
+                        'tag' => 'service:navigation:documents', 'data' => $e->getData()
+                    ]);
+                    $response = ['draw' => max(0, (int)($_GET['draw'] ?? 0)), 'error' => $e->getMessage()];
+                }
+                break;
             case 'logs':
                 $response = $this->logsPageAjax();
 
@@ -117,6 +147,10 @@ class Dispatcher
                 case 'docs':
                     $this->documentsPage();
 
+                    return true;
+                case 'pdf':
+                    $this->downloadUrl = FetchDocuments::pdfLink((int)($_GET['id'] ?? 0));
+                    $this->template = 'pdf';
                     return true;
                 case 'logs':
                     $this->logsPage();

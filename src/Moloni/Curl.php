@@ -4,10 +4,24 @@ namespace Moloni;
 
 use Moloni\Core\Storage;
 use Moloni\Exceptions\APIException;
+use Moloni\Facades\LoggerFacade;
 
 class Curl
 {
     private static $apiUrl = 'https://api.moloni.pt/v1/';
+    private static $readDeadline;
+
+    public static function withReadBudget(callable $callback)
+    {
+        $previous = self::$readDeadline;
+        $deadline = microtime(true) + 15;
+        self::$readDeadline = $previous === null ? $deadline : min($previous, $deadline);
+        try {
+            return $callback();
+        } finally {
+            self::$readDeadline = $previous;
+        }
+    }
 
     public static function simple($action, $values = [], $print = false)
     {
@@ -80,27 +94,45 @@ class Curl
         }
 
         $con = curl_init();
-        curl_setopt_array($con, [
+        $options = [
             CURLOPT_URL => self::$apiUrl . $action . '/?' . http_build_query($parameters, '', '&', PHP_QUERY_RFC3986),
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_HEADER => false,
             CURLOPT_CONNECTTIMEOUT => 10,
             CURLOPT_TIMEOUT => 45
-        ]);
+        ];
+        if (self::$readDeadline !== null) {
+            $remaining = (int)floor((self::$readDeadline - microtime(true)) * 1000);
+            if ($remaining <= 0) {
+                curl_close($con);
+                throw new APIException('Tempo de consulta excedido. Tente atualizar a página.', ['kind' => 'budget'], $action);
+            }
+            $options[CURLOPT_CONNECTTIMEOUT_MS] = min(5000, $remaining);
+            $options[CURLOPT_TIMEOUT_MS] = $remaining;
+        }
+        curl_setopt_array($con, $options);
 
         if ($values !== null) {
             curl_setopt($con, CURLOPT_POST, true);
             curl_setopt($con, CURLOPT_POSTFIELDS, http_build_query($values));
         }
 
+        $started = microtime(true);
         $body = curl_exec($con);
         $errno = curl_errno($con);
         $status = (int)curl_getinfo($con, CURLINFO_HTTP_CODE);
         curl_close($con);
+        $elapsed = (int)round((microtime(true) - $started) * 1000);
+        if ($elapsed >= 2000) {
+            LoggerFacade::warning('Pedido Moloni lento.', [
+                'tag' => 'service:api:slow', 'action' => $action,
+                'elapsed_ms' => $elapsed, 'http_status' => $status, 'curl_errno' => $errno
+            ]);
+        }
 
         if ($body === false) {
             throw new APIException('Erro de comunicação com Moloni.', [
-                'kind' => 'transport', 'curl_errno' => $errno, 'http_status' => $status
+                'kind' => 'transport', 'curl_errno' => $errno, 'http_status' => $status, 'elapsed_ms' => $elapsed
             ], $action);
         }
 

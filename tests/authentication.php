@@ -319,6 +319,8 @@ $tests['explicit logout alone clears stored and in-memory credentials'] = functi
     check(!State::$tables['moloni'] && Storage::$MOLONI_ACCESS_TOKEN === '' && Storage::$MOLONI_COMPANY_ID === 0, 'Logout left credentials behind');
 };
 
+require __DIR__ . '/navigation.php';
+
 $failed = 0;
 foreach ($tests as $name => $test) {
     State::reset();

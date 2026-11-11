@@ -2,8 +2,6 @@
 
 namespace Moloni\Model;
 
-use Moloni\Api\Companies;
-use Moloni\Api\Documents;
 use Moloni\Error;
 use Moloni\Exceptions\APIException;
 use WHMCS\Database\Capsule;
@@ -253,56 +251,6 @@ class WhmcsDB
                 'client' => $client,
                 'currency' => self::getCustomerCurrency($client->currency)
             ];
-        }
-
-        return ($array);
-    }
-
-    public static function getAllDocuments()
-    {
-        $me = Companies::companyMe();
-        $array = [];
-        $invoice = [];
-        foreach (Capsule::table('moloni_invoices')
-                     ->join('tblinvoices', 'moloni_invoices.order_id', '=', 'tblinvoices.id')
-                     ->select('moloni_invoices.*', 'tblinvoices.invoicenum')
-                     ->where('moloni_invoices.invoice_date', '>=', (defined('AFTER_DATE_DOC') ? (string)AFTER_DATE_DOC : ''))->get() as $row) {
-            if ($row->value != -1) {
-                if ((int)$row->invoice_id > 0) {
-                    $document = Documents::getOneInfo($row->invoice_id);
-                    if ($document) {
-                        $invoice['order_id'] = $row->order_id;
-                        $invoice['invoicenum'] = $row->invoicenum;
-                        $invoice['name'] = $document['entity_name'];
-                        $invoice['set'] = $document['document_set']['name'];
-                        $invoice['date'] = $document['date'];
-                        $invoice['status'] = $document['status'];
-                        $invoice['net_value'] = $document['net_value'];
-
-                        unset($document);
-
-                        $array[] = [
-                            'invoice' => $invoice,
-                            'detail' => "https://www.moloni.pt/" . $me['slug'] . "/" . Documents::getDocumentType($row->invoice_id) . "/showDetail/" . $row->invoice_id . "/",
-                            'download' => ($row->invoice_status == 1) ? Documents::getPDFLink($row->invoice_id) : null,
-                        ];
-                    }
-                }
-            } else {
-                $invoice['order_id'] = $row->order_id;
-                $invoice['invoicenum'] = $row->invoicenum;
-                $invoice['name'] = 'Não gerado';
-                $invoice['set'] = 'Não gerado';
-                $invoice['date'] = date('c', strtotime($row->invoice_date));
-                $invoice['status'] = -1;
-                $invoice['net_value'] = "";
-
-                $array[] = [
-                    'invoice' => $invoice,
-                    'detail' => null,
-                    'download' => null,
-                ];
-            }
         }
 
         return ($array);

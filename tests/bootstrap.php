@@ -15,6 +15,8 @@ namespace Moloni\Tests {
         public static $schema;
         public static $schemaFailure;
         public static $serverVersion;
+        public static $clock;
+        public static $queryFactory;
 
         public static function reset()
         {
@@ -27,8 +29,8 @@ namespace Moloni\Tests {
                     'auth_error' => '', 'retry_after' => 0
                 ]],
                 'moloni_pending_invoices' => [], 'moloni_invoices' => [], 'moloni_configs' => [],
-                'moloni_logs' => [], 'tblinvoices' => [], 'tblinvoicedata' => [], 'tblinvoiceitems' => [],
-                'tblclients' => [], 'tblcurrencies' => []
+                'moloni_navigation_cache' => [], 'moloni_logs' => [], 'tblinvoices' => [], 'tblinvoicedata' => [], 'tblinvoiceitems' => [],
+                'tblclients' => [], 'tblcurrencies' => [], 'tblcustomfields' => []
             ];
             self::$responses = self::$requests = self::$logs = self::$activity = self::$locks = [];
             self::$lockResult = 1;
@@ -36,6 +38,8 @@ namespace Moloni\Tests {
             self::$ignoreTokenWrites = false;
             self::$schemaFailure = false;
             self::$serverVersion = '8.0.40';
+            self::$clock = null;
+            self::$queryFactory = null;
             self::$schema = [];
             foreach (self::$tables as $table => $rows) {
                 self::$schema[$table] = $rows ? array_keys($rows[0]) : [];
@@ -55,11 +59,11 @@ namespace Moloni\Tests {
             self::$tables['moloni'][0]['retry_after'] = 0;
         }
 
-        public static function respond($body, $status = 200, $errno = 0)
+        public static function respond($body, $status = 200, $errno = 0, $duration = 0)
         {
             self::$responses[] = [
                 'body' => is_array($body) ? json_encode($body) : $body,
-                'status' => $status, 'errno' => $errno
+                'status' => $status, 'errno' => $errno, 'duration' => $duration
             ];
         }
 
@@ -112,15 +116,23 @@ namespace Moloni\Tests {
 
         public function __construct($table) { $this->table = $table; }
         public function select(...$columns) { return $this; }
-        public function where($column, $value) { $this->conditions[$column] = $value; return $this; }
+        public function where($column, $operator, $value = null)
+        {
+            $this->conditions[$column] = func_num_args() === 2 ? ['=', $operator] : [$operator, $value];
+            return $this;
+        }
+        public function distinct($column) { return $this; }
+        public function groupBy($column) { return $this; }
         public function whereNotExists($callback) { $this->unmapped = true; return $this; }
         public function orderBy($column) { $this->order = $column; return $this; }
         public function limit($limit) { $this->limit = $limit; return $this; }
 
         private function matches(array $row)
         {
-            foreach ($this->conditions as $column => $value) {
-                if ($row[$column] != $value) {
+            foreach ($this->conditions as $column => $condition) {
+                list($operator, $value) = $condition;
+                if (($operator === '=' && $row[$column] != $value) ||
+                    ($operator === '!=' && $row[$column] == $value)) {
                     return false;
                 }
             }
@@ -173,6 +185,18 @@ namespace Moloni\Tests {
             return true;
         }
 
+        public function updateOrInsert(array $key, array $values)
+        {
+            foreach ($key as $column => $value) {
+                $this->where($column, $value);
+            }
+            if ($this->first()) {
+                $this->update($values);
+            } else {
+                $this->insert(array_merge($key, $values));
+            }
+        }
+
         public function delete()
         {
             State::$tables[$this->table] = array_values(array_filter(
@@ -218,6 +242,12 @@ namespace Moloni\Tests {
                 State::$tables['moloni_invoices'][] = [
                     'order_id' => $values[':order_id'], 'invoice_id' => $values[':invoice_id']
                 ];
+            } elseif (strpos($this->sql, 'INSERT INTO moloni_navigation_cache') !== false) {
+                preg_match('/moloni_navigation_cache \\((.*?)\\) VALUES/', $this->sql, $matches);
+                $columns = explode('`, `', trim($matches[1], '`'));
+                $entry = array_combine($columns, $values);
+                $key = array_intersect_key($entry, array_flip(['company_id', 'action', 'object_id']));
+                (new Query('moloni_navigation_cache'))->updateOrInsert($key, array_diff_key($entry, $key));
             } else {
                 throw new \RuntimeException('Unexpected SQL: ' . $this->sql);
             }
@@ -270,7 +300,16 @@ namespace Moloni\Tests {
 namespace WHMCS\Database {
     class Capsule
     {
-        public static function table($table) { return new \Moloni\Tests\Query($table); }
+        public static function table($table)
+        {
+            if (\Moloni\Tests\State::$queryFactory) {
+                $query = call_user_func(\Moloni\Tests\State::$queryFactory, $table);
+                if ($query) {
+                    return $query;
+                }
+            }
+            return new \Moloni\Tests\Query($table);
+        }
         public static function connection() { return new \Moloni\Tests\Connection(); }
         public static function schema() { return new \Moloni\Tests\Schema(); }
     }
@@ -291,6 +330,7 @@ namespace Moloni\Facades {
 }
 
 namespace Moloni {
+    function microtime($asFloat = false) { return \Moloni\Tests\State::$clock ?? \microtime($asFloat); }
     function curl_init() { return (object)['options' => []]; }
     function curl_setopt_array($handle, $options) { $handle->options = $options; return true; }
     function curl_setopt($handle, $key, $value) { $handle->options[$key] = $value; return true; }
@@ -301,6 +341,16 @@ namespace Moloni {
             throw new \RuntimeException('Unexpected HTTP request');
         }
         $handle->response = array_shift(\Moloni\Tests\State::$responses);
+        if (\Moloni\Tests\State::$clock !== null) {
+            $duration = $handle->response['duration'];
+            if (isset($handle->options[CURLOPT_TIMEOUT_MS]) && $duration * 1000 > $handle->options[CURLOPT_TIMEOUT_MS]) {
+                $duration = $handle->options[CURLOPT_TIMEOUT_MS] / 1000;
+                $handle->response['body'] = false;
+                $handle->response['errno'] = 28;
+                $handle->response['status'] = 0;
+            }
+            \Moloni\Tests\State::$clock += $duration;
+        }
         return $handle->response['body'];
     }
     function curl_errno($handle) { return $handle->response['errno']; }
@@ -313,7 +363,8 @@ namespace {
         function curl_init() {}
     }
     foreach (['CURLOPT_URL', 'CURLOPT_RETURNTRANSFER', 'CURLOPT_HEADER', 'CURLOPT_CONNECTTIMEOUT',
-        'CURLOPT_TIMEOUT', 'CURLOPT_POST', 'CURLOPT_POSTFIELDS', 'CURLINFO_HTTP_CODE'] as $index => $constant) {
+        'CURLOPT_TIMEOUT', 'CURLOPT_POST', 'CURLOPT_POSTFIELDS', 'CURLINFO_HTTP_CODE',
+        'CURLOPT_TIMEOUT_MS', 'CURLOPT_CONNECTTIMEOUT_MS'] as $index => $constant) {
         if (!defined($constant)) {
             define($constant, $index + 1);
         }

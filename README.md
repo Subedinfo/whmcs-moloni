@@ -1,4 +1,6 @@
-# Moloni WHMCS authentication improvements (8.1.1)
+# Moloni WHMCS authentication and navigation improvements (8.1.2)
+
+Release history: [CHANGES.md](./CHANGES.md).
 
 ## Deploying
 
@@ -6,12 +8,13 @@
    before production; invoice generation makes real API calls.
 2. Pause WHMCS automation while deploying the complete plugin directory.
 3. Open the Moloni addon as a WHMCS administrator. WHMCS should run the module's
-   upgrade callback for version 8.1.1. Confirm that the upgrade succeeds before
+   upgrade callback for version 8.1.2. Confirm that the upgrade succeeds before
    resuming automation.
 4. Verify that `moloni` has the new `access_expires_at`, `refresh_expires_at`,
    `auth_error`, and `retry_after` columns, and that `moloni_pending_invoices`
-   exists. The upgrade preserves existing credentials, company selection,
-   configuration, and invoice mappings and can run repeatedly.
+   exists. Version 8.1.2 also creates `moloni_navigation_cache`. The upgrade
+   preserves existing credentials, company selection, configuration, and invoice
+   mappings and can run repeatedly.
 5. Resume the normal WHMCS system cron, preferably every five minutes. Its
    `AfterCronJob` hook maintains authentication even when no invoices are paid.
 
@@ -38,7 +41,8 @@ database for these locks. No additional PHP packages are required.
 - Confirmed refresh-token expiry/revocation requires login again, but preserves
   the company. Rejected application credentials require correction and login.
   Only explicit logout deletes the saved connection.
-- API requests have a 10-second connection timeout and a 45-second total timeout.
+- Outside bounded navigation, API requests have a 10-second connection timeout
+  and a 45-second total timeout.
   Documented access-token rejection can trigger one coordinated renewal and one
   replay. HTTP 400 alone is not sufficient to trigger renewal.
 - Transport failures, malformed responses, and server errors are surfaced
@@ -83,6 +87,51 @@ Useful module log tags:
 - `service:document:authentication-recovery`
 - `service:api:error`
 
+## Navigation performance (8.1.2)
+
+- The Documents page renders its shell without fetching document details.
+  DataTables retrieves just the requested page through the existing authenticated
+  addon AJAX route. The default is ten rows, with a maximum of 25; there is no
+  unbounded "all rows" option. Filtering and ordering run before the database
+  page slice.
+- Document details are fetched once per visible document and cached for five
+  minutes, scoped to the selected company. Company link metadata and the five
+  configuration option lists are cached for 15 minutes. Cache writes use an
+  atomic database upsert to handle concurrent page loads.
+- PDF URLs are never prefetched or cached. The download button looks up a fresh
+  URL only when clicked, after authenticating and checking that the document is
+  linked to this WHMCS installation.
+- Navigation has a shared **15-second external-API budget**, including any
+  token renewal/replay. Each call receives only the remaining time. This does
+  not bound database queries, PHP worker/session queueing, or the entire hosting
+  stack. Invoice creation and cron retain their existing 45-second per-call
+  timeout.
+- If document data cannot be retrieved within the budget, the rows remain
+  visible with explicitly identified local/cached data and a warning. A normal
+  reload reuses already-fetched entries and can fill the remaining rows.
+- **Atualizar página** bypasses the document cache for the visible page.
+  **Atualizar listas** bypasses configuration-list caches. Temporary refresh
+  failures can use previously cached data, with a visible warning; authentication
+  or company errors are not hidden by cached data. A cold configuration failure
+  produces an explicit error instead of an empty, potentially destructive form.
+- Search includes linked WHMCS invoice numbers/customer fields and remote
+  metadata already cached from previous visits. Remote-only names/series are
+  not globally searchable until those documents have been consulted; this avoids
+  fetching the entire remote history for each search. Remote status/date/total
+  values may be up to five minutes old, or older when a stale-data warning is
+  displayed. These caches are for navigation only, not invoice generation.
+
+On a cold ten-document page, normal data loading takes at most eleven API calls
+(ten details plus company metadata), rather than 31 for ten closed documents or
+301 for an entire hundred-document history. A warm page makes no data API calls;
+token renewal may still be necessary. Warm configuration likewise makes no data
+API calls rather than five.
+
+Requests taking at least two seconds are recorded under `service:api:slow`, with
+endpoint, elapsed milliseconds, HTTP status, and cURL error code, but no tokens,
+URLs, or request payloads. Cache/partial-document warnings use
+`service:navigation:cache` and `service:navigation:documents`.
+
 ## Validation
 
 Run the dependency-free regression suite with a PHP CLI:
@@ -91,9 +140,13 @@ Run the dependency-free regression suite with a PHP CLI:
 php tests/authentication.php
 ```
 
-Tests use in-memory WHMCS/database doubles and mocked HTTP responses. They do
-not contact Moloni or a real database. Validate actual MySQL/MariaDB locking,
-WHMCS upgrade/cron integration, invoice creation, and email behavior in staging.
+The suite includes authentication and navigation tests, with measured request
+counts, cache scope/staleness, page limits, lazy PDF lookup, and a simulated
+15-second cumulative budget. Tests use in-memory WHMCS/database doubles and
+mocked HTTP responses. They do not contact Moloni or a real database. Browser
+checks likewise use mocked data. Validate actual MySQL/MariaDB locking and
+document search/order queries, WHMCS upgrade/cron integration, invoice creation,
+and email behavior in staging.
 
 Suggested staging checks:
 
@@ -107,6 +160,12 @@ Suggested staging checks:
    and that repeated cron runs do not submit another insertion.
 6. Confirm idle renewal, special-character login credentials, manual generation,
    closed/draft document settings, and explicit logout.
+7. Upgrade from 8.1.1 without deactivation. Check Documents paging, sorting,
+   filtering, refresh, draft/closed/discarded rows, and lazy PDF downloads.
+8. Reopen Configuration and Documents to verify warm-cache response times.
+   Simulate API slowness and confirm visible stale/local-data warnings rather
+   than a stalled whole page. Inspect `service:api:slow` records for actual
+   production endpoint timings.
 
 References:
 [Moloni authentication](https://www.moloni.pt/dev/autenticacao/),

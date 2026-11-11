@@ -3,12 +3,14 @@
 use Moloni\Tools;
 use Moloni\Model\WhmcsDB;
 use Moloni\Enums\DocumentType;
-use Moloni\Api\Settings\DocumentSets;
-use Moloni\Api\GlobalSettings\TaxExemptions;
-use Moloni\Api\Settings\MeasurementUnits;
-use Moloni\Api\Settings\MaturityDates;
-use Moloni\Api\Settings\PaymentMethods;
+use Moloni\Core\NavigationCache;
 
+$refresh = ($_GET['refresh'] ?? '') === '1';
+$documentSets = NavigationCache::get('documentSets/getAll', 0, $refresh);
+$exemptions = NavigationCache::get('taxExemptions/getAll', 0, $refresh);
+$units = NavigationCache::get('measurementUnits/getAll', 0, $refresh);
+$maturities = NavigationCache::get('maturityDates/getAll', 0, $refresh);
+$payments = NavigationCache::get('paymentMethods/getAll', 0, $refresh);
 ?>
 
 <section id="moloni">
@@ -16,8 +18,13 @@ use Moloni\Api\Settings\PaymentMethods;
     $activeTab = 'config';
 
     include MOLONI_TEMPLATE_PATH . 'Blocks/header.php';
+    include MOLONI_TEMPLATE_PATH . 'Blocks/messages.php';
     include MOLONI_TEMPLATE_PATH . 'Blocks/navbar.php';
     ?>
+    <p>
+        Listas em cache durante 15 minutos.
+        <a href="<?= htmlspecialchars(Tools::genURL('config') . '&refresh=1', ENT_QUOTES, 'UTF-8') ?>">Atualizar listas</a>
+    </p>
 
     <div class="row">
         <div class="col s12">
@@ -32,7 +39,6 @@ use Moloni\Api\Settings\PaymentMethods;
                         <div class='input-field'>
                             <select name='document_set' id="document_set">
                                 <option value='' disabled selected>Selecionar série de documentos a usar</option>
-                                <?php $documentSets = DocumentSets::getAll(); ?>
                                 <?php foreach ($documentSets as $key => $documentSet) : ?>
                                     <option value="<?= $documentSet['document_set_id'] ?>"
                                         <?= Tools::isSelected("DOCUMENT_SET", $documentSet['document_set_id']) ?>
@@ -113,7 +119,7 @@ use Moloni\Api\Settings\PaymentMethods;
                             <select name='exemption_reason' id="exemption_reason">
                                 <option value='' disabled selected>Razão de isenção a ser usada por defeito</option>
                                 <?php
-                                $getALl = TaxExemptions::getAll();
+                                $getALl = $exemptions;
                                 foreach ($getALl as $key => $value) : ?>
                                     <option value='<?= $value['code'] ?>'
                                         <?= Tools::isSelected("EXEMPTION_REASON", $value['code']) ?>
@@ -130,7 +136,7 @@ use Moloni\Api\Settings\PaymentMethods;
                                 <option value='' disabled selected>Unidade de medida a ser usada por defeito</option>
 
                                 <?php
-                                $getALl = MeasurementUnits::getAll();
+                                $getALl = $units;
                                 foreach ($getALl as $key => $value) : ?>
                                     <option value='<?= $value['unit_id'] ?>'
                                         <?= Tools::isSelected("MEASURE_UNIT", $value['unit_id']) ?>
@@ -149,7 +155,7 @@ use Moloni\Api\Settings\PaymentMethods;
                                 <option value='' disabled selected>Prazo de vencimento</option>
 
                                 <?php
-                                $getALl = MaturityDates::getAll();
+                                $getALl = $maturities;
                                 foreach ($getALl as $key => $value) : ?>
                                     <option value='<?= $value['maturity_date_id'] ?>'
                                         <?= Tools::isSelected("MATURITY_DATE", $value['maturity_date_id']) ?>
@@ -167,7 +173,7 @@ use Moloni\Api\Settings\PaymentMethods;
                                 <option value='' disabled selected>Método de pagamento a ser usado por defeito</option>
 
                                 <?php
-                                $getALl = PaymentMethods::getAll();
+                                $getALl = $payments;
                                 foreach ($getALl as $key => $value) : ?>
                                     <option value='<?= $value['payment_method_id'] ?>'
                                         <?= Tools::isSelected("PAYMENT_METHOD", $value['payment_method_id']) ?>

@@ -1,161 +1,84 @@
 <?php
 
 use Moloni\Tools;
-use Moloni\Model\WhmcsDB;
 
 ?>
 <section id="moloni">
     <?php
     $activeTab = 'docs';
-
     include MOLONI_TEMPLATE_PATH . 'Blocks/header.php';
     include MOLONI_TEMPLATE_PATH . 'Blocks/messages.php';
     include MOLONI_TEMPLATE_PATH . 'Blocks/navbar.php';
     ?>
-
-    <div class="row">
-        <div class="col s12" style='margin-top: 5px;'>
-            <div>
-                <?php $documents = WhmcsDB::getAllDocuments(); ?>
-
-                <table class='highlight display moloniTable'>
-                    <thead>
-                    <tr>
-                        <th class='center-align' data-field="id">Número</th>
-                        <th data-field="name">Cliente</th>
-                        <th data-field="documentset">Série</th>
-                        <th data-field="date">Data</th>
-                        <th data-field="status">Estado</th>
-                        <th data-field="total">Total</th>
-                        <th data-field="acts" style="width:190px !important;">
-                            <div>Ações</div>
-                        </th>
-                    </tr>
-                    </thead>
-
-                    <tbody>
-                    <?php
-                    foreach ($documents as $document) {
-                        echo "<tr" . ((empty($document['detail'])) ? ' class="naoGeradoMoloni"' : null) . ">";;
-                        $orderNumero = (!empty($document['invoice']['invoicenum'])) ? $document['invoice']['invoicenum'] : $document['invoice']['order_id'];
-                        echo "<td class='center-align'><a style='text-transform: none' class='waves-effect waves-light btn blue white-text' href='invoices.php?action=edit&id=" . $document['invoice']['order_id'] . "' target='_BLANK'>" . $orderNumero . "</a></td>";
-                        echo "<td>" . $document['invoice']['name'] . "</td>";
-                        echo "<td>" . $document['invoice']['set'] . "</td>";
-                        echo "<td>" . date('d-m-Y', strtotime($document['invoice']['date'])) . "</td>";
-                        echo "<td>" . (($document['invoice']['status'] == 1) ? 'Fechado' : (($document['invoice']['status'] == -1) ? 'Não gerado' : 'Rascunho')) . "</td>";
-                        echo "<td >" . (($document['invoice']['net_value'] == "") ? "0.00" : $document['invoice']['net_value']) . "</td>";
-                        echo "
-							<td>
-							<div class='acoesBtnMoloniDocs'>
-								  <a class='waves-effect waves-light btn orange' href='" . Tools::genURL("docs", "redo&id=" . $document['invoice']['order_id']) . "'><i class='material-icons'>repeat</i></a>
-						";
-                        if (!empty($document['detail'])) {
-                            echo "<a class='waves-effect waves-light btn blue' target='_BLANK' href='" . $document['detail'] . "'><i class='material-icons'>visibility</i></a>";
-                        }
-                        if (!empty($document['download'])) {
-                            echo "<a class='waves-effect waves-light btn green' target='_BLANK' href='" . $document['download'] . "'><i class='material-icons'>cloud_download</i></a>";
-                        }
-                        echo "</div>";
-                        echo "</td>";
-                        echo "</tr>";
-                    }
-
-                    ?>
-                    </tbody>
-                </table>
-            </div>
-        </div>
-
-    </div>
-
+    <p>
+        Dados Moloni em cache até 5 minutos. A pesquisa abrange as faturas WHMCS e os dados Moloni já consultados.
+        <button type="button" class="btn waves-effect waves-light" id="moloni-documents-refresh">Atualizar página</button>
+    </p>
+    <div id="moloni-documents-warning" class="alert alert-warning" style="display:none" role="status"></div>
+    <table class="highlight display moloniTable" width="100%">
+        <thead>
+        <tr>
+            <th>Número</th><th>Cliente</th><th>Série</th><th>Data</th>
+            <th>Estado</th><th>Total</th><th>Ações</th>
+        </tr>
+        </thead>
+        <tbody></tbody>
+    </table>
 </section>
-
 <?php include MOLONI_TEMPLATE_PATH . 'Blocks/footer.php'; ?>
-
 <script>
     $(document).ready(function() {
-        var index = 0;
-        var order = 'asc';
-
-        if (localStorage.getItem("docsIndex") !== null && localStorage.getItem("docsOrder") !== null) {
-            switch (localStorage.getItem("docsIndex")) {
-                case 'id':
-                    index = 0;
-                    break;
-                case 'name':
-                    index = 1;
-                    break;
-                case 'documentset':
-                    index = 2;
-                    break;
-                case 'date':
-                    index = 3;
-                    break;
-                case 'status':
-                    index = 4;
-                    break;
-                case 'total':
-                    index = 5;
-                    break;
-                case 'acts':
-                    index = 6
-                    break;
-            }
-            if (localStorage.getItem("docsOrder") == 'descending') {
-                order = 'desc';
-            }
-        }
-
-        $('.highlight').dataTable({
-            "aaSorting": [[index, order]],
-            "sPaginationType": "simple_numbers",
-            "sDom": '<"top"<"MolSearch"f><"MolShowing"l>>rt<"bottom row"<"MolInfo col s6"i><"MolPagination col s6"p>><"clear">',
-            "oLanguage": {
-                "sLengthMenu": "_MENU_",
-                "sZeroRecords": "Sem resultados encontrados",
-                "sInfo": "A mostrar <b>_START_</b> - <b>_END_</b> de <b>_TOTAL_</b> Faturas",
-                "sInfoEmpty": "Sem resultados para apresentar",
-                "sInfoFiltered": "(Filtrados de _MAX_)",
-                "sSearch": "",
-                "sSearchPlaceholder": "Pesquisar...",
-                "oPaginate": {
-                    "sPrevious": "Anterior",
-                    "sNext": "Seguinte",
+        var refresh = false;
+        var warning = $('#moloni-documents-warning');
+        var fields = ['id', 'name', 'documentset', 'date', 'status', 'total'];
+        var index = fields.indexOf(localStorage.getItem('docsIndex'));
+        var order = localStorage.getItem('docsOrder') === 'descending' ? 'desc' : 'asc';
+        var table = $('.moloniTable').dataTable({
+            processing: true,
+            serverSide: true,
+            searchDelay: 500,
+            order: [[index < 0 ? 0 : index, order]],
+            pageLength: 10,
+            lengthMenu: [10, 25],
+            ajax: {
+                url: <?= json_encode(Tools::genURL('docs'), JSON_HEX_TAG | JSON_HEX_AMP) ?>,
+                data: function(data) {
+                    data.ajax = true;
+                    data.refresh = refresh ? '1' : '0';
+                    refresh = false;
+                },
+                dataSrc: function(response) {
+                    warning.text(response.warning || '').toggle(!!response.warning);
+                    return response.data;
+                },
+                error: function(xhr) {
+                    var message = xhr.responseJSON && xhr.responseJSON.error;
+                    warning.text(message || 'Não foi possível consultar os documentos. Tente novamente.').show();
+                    $('.dataTables_processing').hide();
                 }
+            },
+            columns: [
+                {data: 'number'}, {data: 'name'}, {data: 'document_set'}, {data: 'date'},
+                {data: 'status'}, {data: 'total'}, {data: 'actions', orderable: false, searchable: false}
+            ],
+            sPaginationType: 'simple_numbers',
+            sDom: '<"top"<"MolSearch"f><"MolShowing"l>>rt<"bottom row"<"MolInfo col s6"i><"MolPagination col s6"p>><"clear">',
+            language: {
+                sLengthMenu: '_MENU_', sZeroRecords: 'Sem resultados encontrados',
+                sInfo: 'A mostrar <b>_START_</b> - <b>_END_</b> de <b>_TOTAL_</b> Faturas',
+                sInfoEmpty: 'Sem resultados para apresentar', sInfoFiltered: '(Filtrados de _MAX_)',
+                sSearch: '', sSearchPlaceholder: 'Pesquisar...',
+                oPaginate: {sPrevious: 'Anterior', sNext: 'Seguinte'}
             }
         });
-
-        function deselect(e) {
-            $('.pop').slideFadeToggle(function() {
-                e.removeClass('selected');
-            });
-        }
-
-        $(function() {
-            $('.check_error').on('click', function() {
-                if ($(this).hasClass('selected')) {
-                    deselect($(this));
-                } else {
-                    $(this).addClass('selected');
-                    $('.pop').slideFadeToggle();
-                }
-                return false;
-            });
-
-            $('.close').on('click', function() {
-                deselect($('.check_error'));
-                return false;
-            });
+        $('#moloni-documents-refresh').on('click', function() {
+            refresh = true;
+            table.fnDraw(false);
         });
-
-        $.fn.slideFadeToggle = function(easing, callback) {
-            return this.animate({opacity: 'toggle', height: 'toggle'}, 'fast', easing, callback);
-        };
-
-        //guardar ultima ordenacao
-        $(".moloniTable th").on('click', function() {
-            localStorage.setItem('docsIndex', $(this).attr('data-field'));
-            localStorage.setItem('docsOrder', $(this).attr('aria-sort'));
+        $('.moloniTable').on('order.dt', function() {
+            var ordering = table.api().order()[0];
+            localStorage.setItem('docsIndex', fields[ordering[0]]);
+            localStorage.setItem('docsOrder', ordering[1] === 'asc' ? 'ascending' : 'descending');
         });
     });
 </script>

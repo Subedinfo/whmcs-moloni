@@ -21,6 +21,7 @@ class Installer
         self::$errors = [];
         self::installMoloni();
         self::installAuthentication();
+        self::installNavigationCache();
         self::installMoloniConfigs();
         self::installMoloniInvoices();
         self::installMoloniLogs();
@@ -62,6 +63,7 @@ class Installer
     {
         self::$errors = [];
         self::installAuthentication();
+        self::installNavigationCache();
         self::installMoloniLogs();
 
         if (!empty(self::$errors)) {
@@ -75,6 +77,33 @@ class Installer
     }
 
     //        Queries        //
+
+    private static function installNavigationCache()
+    {
+        try {
+            if (!Capsule::schema()->hasTable('moloni_navigation_cache')) {
+                Capsule::schema()->create('moloni_navigation_cache', function ($table) {
+                    $table->integer('company_id');
+                    $table->string('action', 64);
+                    $table->unsignedInteger('object_id');
+                    $table->longText('payload');
+                    $table->bigInteger('expires_at');
+                    $table->bigInteger('updated_at');
+                    $table->string('entity_name')->nullable();
+                    $table->string('document_set')->nullable();
+                    $table->date('document_date')->nullable();
+                    $table->integer('document_status')->nullable();
+                    $table->decimal('net_value', 18, 6)->nullable();
+                    $table->primary(['company_id', 'action', 'object_id']);
+                });
+            }
+        } catch (Exception $e) {
+            self::$errors = [
+                'status' => 'error',
+                'description' => 'Falha ao criar cache de navegação Moloni: ' . $e->getMessage()
+            ];
+        }
+    }
 
     private static function installAuthentication()
     {
