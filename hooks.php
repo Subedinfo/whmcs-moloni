@@ -1,47 +1,33 @@
 <?php
 
-use Moloni\Start;
 use Moloni\Facades\LoggerFacade;
-use Moloni\Exceptions\DocumentException;
-use Moloni\Exceptions\DocumentWarning;
-use Moloni\Services\Invoices\CreateDocumentFromInvoice;
+use Moloni\Services\Invoices\RecoverAuthenticationFailures;
 
-add_hook("InvoicePaid", 1, function ($vars) {
+add_hook('InvoicePaid', 1, function ($vars) {
     require_once __DIR__ . '/vendor/autoload.php';
 
-    $moloni = new Start();
-
-    if (!$moloni->hasValidCompany() || !$moloni->hasValidAuthentication()) {
-        return true;
+    try {
+        RecoverAuthenticationFailures::process((int)$vars['invoiceid']);
+    } catch (Exception $e) {
+        LoggerFacade::error('Erro ao processar fatura automática Moloni.', [
+            'tag' => 'service:document:create:fatalerror',
+            'invoiceId' => (int)$vars['invoiceid'],
+            'exception' => get_class($e)
+        ]);
+        logActivity('Moloni: erro ao processar fatura #' . (int)$vars['invoiceid'] . '. Consulte os registos.');
     }
+});
 
-    $moloni->variablesDefine();
+add_hook('AfterCronJob', 1, function () {
+    require_once __DIR__ . '/vendor/autoload.php';
 
-    if (defined('INVOICE_AUTO') && INVOICE_AUTO) {
-        $invoiceId = (int)$vars['invoiceid'];
-
-        try {
-            $service = new CreateDocumentFromInvoice($invoiceId);
-            $service->setIsHook(true);
-            $service->execute();
-        } catch (DocumentWarning $e) {
-            // No need to catch
-        } catch (DocumentException $e) {
-            LoggerFacade::error($e->getMessage() . ' (automático)', [
-                'tag' => 'service:document:create:error',
-                'isHook' => 1,
-                'invoiceId' => $invoiceId,
-                'data' => $e->getData()
-            ]);
-        } catch (Exception $e) {
-            LoggerFacade::error('Erro fatal. (automático)', [
-                'tag' => 'service:document:create:fatalerror',
-                'isHook' => 1,
-                'invoiceId' => $invoiceId,
-                'message' => $e->getMessage()
-            ]);
-        }
+    try {
+        RecoverAuthenticationFailures::run();
+    } catch (Exception $e) {
+        LoggerFacade::error('Erro na manutenção da ligação Moloni.', [
+            'tag' => 'service:token:maintenance',
+            'exception' => get_class($e)
+        ]);
+        logActivity('Moloni: erro na manutenção da ligação. Consulte os registos do módulo.');
     }
-
-    return true;
 });

@@ -4,7 +4,7 @@ namespace Moloni\Admin;
 
 use Exception;
 use Moloni\Core\Storage;
-use Moloni\Curl;
+use Moloni\Exceptions\APIException;
 use Moloni\Exceptions\DocumentException;
 use Moloni\Exceptions\DocumentWarning;
 use Moloni\Facades\LoggerFacade;
@@ -14,6 +14,7 @@ use Moloni\Services\Logs\DeleteLogs;
 use Moloni\Services\Logs\FetchLogs;
 use Moloni\Start;
 use Moloni\Error;
+use WHMCS\Database\Capsule;
 
 class Dispatcher
 {
@@ -25,24 +26,37 @@ class Dispatcher
     public function dispatch($parameters)
     {
         $this->moloni = new Start();
-        $this->actionDecide();
+        ob_start();
+        try {
+            $this->actionDecide();
 
-        $templatePath = MOLONI_TEMPLATE_PATH . $this->template . '.php';
+            $templatePath = MOLONI_TEMPLATE_PATH . $this->template . '.php';
 
-        if (file_exists($templatePath)) {
-            require_once $templatePath;
+            if (!file_exists($templatePath)) {
+                ob_end_clean();
+                echo 'Failed loading template ' . $templatePath;
+                return false;
+            }
+
+            require $templatePath;
+            echo ob_get_clean();
             return true;
+        } catch (APIException $e) {
+            ob_end_clean();
+            LoggerFacade::error('Erro de comunicação com Moloni.', [
+                'tag' => 'service:api:error', 'action' => $e->getWhere(), 'data' => $e->getData()
+            ]);
+            Error::create('Moloni', $e->getMessage() . ' Os dados da ligação foram preservados.');
+            require MOLONI_TEMPLATE_PATH . 'connection.php';
+            return false;
         }
-
-        echo 'Failed loading template ' . $templatePath;
-        return false;
     }
 
     public function dispatchAjax()
     {
         $this->moloni = new Start();
 
-        switch ($_GET['action']) {
+        switch ($_GET['action'] ?? '') {
             case 'logs':
                 $response = $this->logsPageAjax();
 
@@ -62,6 +76,11 @@ class Dispatcher
 
     private function actionDecide()
     {
+        if (isset($_GET['action']) && $_GET['action'] === 'logout') {
+            $this->logoutPage();
+            return true;
+        }
+
         // Caso sejam enviados dados de “login”
         if (isset($_REQUEST['mol-username'], $_REQUEST['mol-password'])) {
             $this->tryLogin();
@@ -80,7 +99,13 @@ class Dispatcher
                 }
             }
 
-            switch ($_GET['action']) {
+            $manualCount = Capsule::table('moloni_pending_invoices')
+                ->where('company_id', Storage::$MOLONI_COMPANY_ID)->where('status', 'manual')->count();
+            if ($manualCount > 0) {
+                Error::warning($manualCount . ' fatura(s) precisam de revisão manual. Consulte os registos e confirme no Moloni antes de gerar novamente.');
+            }
+
+            switch ($_GET['action'] ?? '') {
                 case "config":
                     $this->settingsPage();
 
@@ -109,26 +134,30 @@ class Dispatcher
             return true;
         }
 
-        WhmcsDB::clearMoloniTokens();
-        $this->template = "login";
+        $this->template = empty(Storage::$MOLONI_ACCESS_TOKEN) ||
+            Storage::$MOLONI_AUTH_ERROR === 'reconnect' ? 'login' : 'connection';
 
         return true;
     }
 
     private function tryLogin()
     {
-        $loginResult = Curl::login($_REQUEST['mol-username'], $_REQUEST['mol-password']);
-
-        if (empty($loginResult['access_token']) || empty($loginResult['refresh_token'])) {
-            $this->parseLoginError($loginResult);
-        } else {
-            Storage::$MOLONI_ACCESS_TOKEN = $loginResult['access_token'];
-            Storage::$MOLONI_REFRESH_TOKEN = $loginResult['refresh_token'];
-
-            $this->moloni->clearMoloniTokens();
-            $this->moloni->setTokens($loginResult['access_token'], $loginResult['refresh_token']);
-
-            $this->template = 'company';
+        try {
+            $this->moloni->login($_REQUEST['mol-username'], $_REQUEST['mol-password']);
+            $this->template = $this->moloni->hasValidCompany() ? 'index' : 'company';
+            $this->moloni->variablesDefine();
+        } catch (APIException $e) {
+            $error = $e->getData()['oauth_error'] ?? '';
+            Error::create('Login', $error === 'invalid_grant' ?
+                'Combinação errada. Confirme o email e a palavra-chave e tente novamente.' : $e->getMessage());
+            LoggerFacade::error('Erro ao ligar conta Moloni.', [
+                'tag' => 'service:token:login', 'data' => $e->getData()
+            ]);
+        } catch (Exception $e) {
+            Error::create('Login', 'Erro ao guardar ligação Moloni. Consulte os registos.');
+            LoggerFacade::error('Erro ao guardar ligação Moloni.', [
+                'tag' => 'service:token:login', 'exception' => get_class($e)
+            ]);
         }
     }
 
@@ -268,7 +297,7 @@ class Dispatcher
             'tag' => 'manual:logout'
         ];
 
-        WhmcsDB::clearMoloniTokens();
+        $this->moloni->clearMoloniTokens();
         LoggerFacade::info($msg, $data);
 
         $this->template = 'login';
@@ -285,52 +314,4 @@ class Dispatcher
 
     //            Auxiliary            //
 
-    private function parseLoginError($loginResult)
-    {
-        if (!in_array('curl', get_loaded_extensions())) {
-            $this->message = [
-                "text" => 'Biblioteca cURL desativada.',
-            ];
-
-            return;
-        }
-
-        if (is_array($loginResult) && isset($loginResult['error'])) {
-            if ($loginResult['error'] === 'invalid_grant') {
-                $message = 'Combinação errada.';
-
-                if (preg_match('/[\'^£$%&*()}{@#~?><>,|=_+¬-]/', $_REQUEST['mol-password'])) {
-                    $message .= ' Caso o problema persista, remova caracteres especiais para evitar problemas de codificação.';
-                } else {
-                    $message .= ' Tente novamente.';
-                }
-
-                $this->message = [
-                    "text" => $message
-                ];
-
-                return;
-            }
-
-            if ($loginResult['error'] === 'invalid_request') {
-                $this->message = [
-                    "text" => 'Pedido inválido.',
-                    "data" => json_encode($loginResult, JSON_PRETTY_PRINT)
-                ];
-
-                return;
-            }
-        }
-
-        $message = 'Erro desconhecido. Caso o problema persista, confirme se o IP está bloqueado junto do apoio Moloni.';
-        $data = [
-            'IP' => isset($_SERVER['SERVER_ADDR']) ? $_SERVER['SERVER_ADDR'] : '',
-            'result' => is_array($loginResult) ? $loginResult : []
-        ];
-
-        $this->message = [
-            "text" => $message,
-            "data" => json_encode($data, JSON_PRETTY_PRINT)
-        ];
-    }
 }

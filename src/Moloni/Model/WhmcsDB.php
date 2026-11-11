@@ -5,6 +5,7 @@ namespace Moloni\Model;
 use Moloni\Api\Companies;
 use Moloni\Api\Documents;
 use Moloni\Error;
+use Moloni\Exceptions\APIException;
 use WHMCS\Database\Capsule;
 
 class WhmcsDB
@@ -17,51 +18,70 @@ class WhmcsDB
 
     public static function getMoloniFirst()
     {
-        return (Capsule::table('moloni')->first());
+        return Capsule::table('moloni')->orderBy('id')->first();
     }
 
     public static function clearMoloniTokens()
     {
-        $pdo = Capsule::connection()->getPdo();
-        $statement = $pdo->prepare('TRUNCATE moloni');
-        $statement->execute();
-
+        Capsule::table('moloni')->delete();
         return true;
     }
 
-    public static function setMoloniTokens($access = '', $refresh = '')
+    public static function setMoloniTokens($access, $refresh, $expiresIn)
     {
-        $pdo = Capsule::connection()->getPdo();
-        $statement = $pdo->prepare('
-            INSERT INTO moloni (access_token, refresh_token, date_login, date_expire, company_id) 
-            VALUES (:access_token, :refresh_token, NOW(), :date_expire, 0)');
-
-        $timeNow = time();
-        $timeExpire = $timeNow + 3000;
-
-        $statement->execute([
-            ':access_token' => $access,
-            ':refresh_token' => $refresh,
-            ':date_expire' => date('Y-m-d H:i:s', $timeExpire)
-        ]);
-
+        $row = self::getMoloniFirst();
+        $values = self::tokenValues($access, $refresh, $expiresIn);
+        if ($row) {
+            Capsule::table('moloni')->where('id', $row->id)->update($values);
+        } else {
+            $values['company_id'] = 0;
+            Capsule::table('moloni')->insert($values);
+        }
+        self::verifyMoloniTokens($access, $refresh);
         return true;
     }
 
-    public static function updateMoloniTokens($access = '', $refresh = '')
+    public static function updateMoloniTokens($id, $access, $refresh, $expiresIn)
     {
-        $timeNow = time();
-        $timeExpire = $timeNow + 3000;
-        $now = strtotime('-7 hours', $timeNow);
+        Capsule::table('moloni')->where('id', $id)->update(self::tokenValues($access, $refresh, $expiresIn));
+        self::verifyMoloniTokens($access, $refresh);
+        return true;
+    }
 
-        $update = Capsule::table('moloni')->where('id', 1)->update([
+    private static function tokenValues($access, $refresh, $expiresIn)
+    {
+        if (!is_string($access) || $access === '' || !is_string($refresh) || $refresh === '' ||
+            !is_numeric($expiresIn) || (int)$expiresIn <= 60) {
+            throw new APIException('Resposta de autenticação inválida.', ['kind' => 'response'], 'grant');
+        }
+
+        $now = time();
+        return [
             'access_token' => $access,
             'refresh_token' => $refresh,
             'date_login' => date('Y-m-d H:i:s', $now),
-            'date_expire' => date('Y-m-d H:i:s', $timeExpire)
-        ]);
+            'date_expire' => date('Y-m-d H:i:s', $now + (int)$expiresIn - 60),
+            'access_expires_at' => $now + (int)$expiresIn - 60,
+            'refresh_expires_at' => $now + 14 * 86400,
+            'auth_error' => '',
+            'retry_after' => 0
+        ];
+    }
 
-        return (!empty($update));
+    private static function verifyMoloniTokens($access, $refresh)
+    {
+        $row = self::getMoloniFirst();
+        if (!$row || $row->access_token !== $access || $row->refresh_token !== $refresh) {
+            throw new APIException('Erro ao guardar tokens Moloni.', ['kind' => 'persistence'], 'grant');
+        }
+    }
+
+    public static function setMoloniAuthError($id, $error, $retryAfter = 0)
+    {
+        Capsule::table('moloni')->where('id', $id)->update([
+            'auth_error' => $error,
+            'retry_after' => $retryAfter
+        ]);
     }
 
     public static function setMoloniCompanyId($company_id)
@@ -136,6 +156,7 @@ class WhmcsDB
                     ':value' => $value
                 ]);
 
+                Capsule::table('moloni_pending_invoices')->where('invoice_id', $invoiceInfo->id)->delete();
                 $pdo->commit();
                 return true;
             } catch (\Exception $e) {
