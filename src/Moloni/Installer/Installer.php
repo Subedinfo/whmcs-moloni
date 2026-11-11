@@ -18,14 +18,16 @@ class Installer
      */
     public static function install()
     {
+        self::$errors = [];
         self::installMoloni();
+        self::installAuthentication();
         self::installMoloniConfigs();
         self::installMoloniInvoices();
         self::installMoloniLogs();
         self::setDefaultSettings();
 
         if (!empty(self::$errors)) {
-            return self::$errors[0];
+            return self::$errors;
         }
 
         return [
@@ -58,10 +60,12 @@ class Installer
      */
     public static function update()
     {
+        self::$errors = [];
+        self::installAuthentication();
         self::installMoloniLogs();
 
         if (!empty(self::$errors)) {
-            return self::$errors[0];
+            return self::$errors;
         }
 
         return [
@@ -71,6 +75,37 @@ class Installer
     }
 
     //        Queries        //
+
+    private static function installAuthentication()
+    {
+        try {
+            foreach (['access_expires_at', 'refresh_expires_at', 'retry_after'] as $column) {
+                if (!Capsule::schema()->hasColumn('moloni', $column)) {
+                    Capsule::schema()->table('moloni', function ($table) use ($column) {
+                        $table->bigInteger($column)->nullable();
+                    });
+                }
+            }
+            if (!Capsule::schema()->hasColumn('moloni', 'auth_error')) {
+                Capsule::schema()->table('moloni', function ($table) {
+                    $table->string('auth_error')->default('');
+                });
+            }
+            if (!Capsule::schema()->hasTable('moloni_pending_invoices')) {
+                Capsule::schema()->create('moloni_pending_invoices', function ($table) {
+                    $table->unsignedInteger('invoice_id')->primary();
+                    $table->integer('company_id');
+                    $table->string('status')->default('pending');
+                    $table->dateTime('created_at');
+                });
+            }
+        } catch (Exception $e) {
+            self::$errors = [
+                'status' => 'error',
+                'description' => 'Falha ao atualizar autenticação Moloni: ' . $e->getMessage()
+            ];
+        }
+    }
 
     private static function installMoloni()
     {

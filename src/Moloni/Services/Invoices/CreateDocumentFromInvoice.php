@@ -9,6 +9,7 @@ use Moloni\Api\PaymentMethods;
 use Moloni\Api\Products;
 use Moloni\Api\Settings\Taxes;
 use Moloni\Core\Storage;
+use Moloni\Core\DatabaseLock;
 use Moloni\Api\Companies;
 use Moloni\Enums\DocumentCreationStatus;
 use Moloni\Enums\DocumentType;
@@ -75,6 +76,16 @@ class CreateDocumentFromInvoice
      */
     public function execute()
     {
+        return DatabaseLock::run('document:' . $this->invoiceId, function () {
+            if (!WhmcsDB::getInvoice($this->invoiceId)) {
+                throw new DocumentWarning('Documento já processado.', [], 'Documento');
+            }
+            return $this->createDocument();
+        });
+    }
+
+    private function createDocument()
+    {
         $this->documentData = [];
 
         $this
@@ -99,7 +110,7 @@ class CreateDocumentFromInvoice
         }
 
         /** Backwards compatible error checking */
-        if (Error::$exists) {
+        if (!empty(Error::$error)) {
             throw new DocumentException(
                 Error::$error['message'],
                 Error::$error['data'],
@@ -903,7 +914,13 @@ class CreateDocumentFromInvoice
      */
     private function createDocumentEntry(array $data, int $value)
     {
-        WhmcsDB::insertMoloniInvoice($this->invoice, $data, $value);
+        if (!WhmcsDB::insertMoloniInvoice($this->invoice, $data, $value)) {
+            throw new DocumentException(
+                'Documento criado no Moloni mas não foi possível guardar a ligação local. Verifique antes de repetir.',
+                ['document_id' => $data['document_id']],
+                'Documento'
+            );
+        }
     }
 
     /**
