@@ -33,6 +33,8 @@
 
 ### Validation and deployment
 
+- Align npm package/lockfile versions and Composer release metadata with the
+  module version, preserving historical releases and dependency versions.
 - Expand the regression suite to 48 authentication/navigation tests, including
   pagination bounds, request counts, cache behavior, lazy downloads, and the
   cumulative API deadline. Check browser interactions using mocked data.

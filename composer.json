@@ -28,6 +28,25 @@
   "extra": {
     "changelog": [
       {
+        "version": "v8.1.2",
+        "title": "Lançamento da versão 8.1.2",
+        "description": [
+          "Paginação, pesquisa e ordenação de documentos no servidor.",
+          "Cache de documentos e configurações com atualização manual.",
+          "Consulta de ligações PDF apenas quando solicitadas.",
+          "Limite de tempo acumulado na navegação e diagnóstico de pedidos lentos."
+        ]
+      },
+      {
+        "version": "v8.1.1",
+        "title": "Lançamento da versão 8.1.1",
+        "description": [
+          "Renovação coordenada de tokens e preservação da ligação em falhas temporárias.",
+          "Manutenção da autenticação através do cron WHMCS.",
+          "Recuperação segura de faturas bloqueadas pela autenticação e prevenção de tentativas duplicadas."
+        ]
+      },
+      {
         "version": "v8.1.0",
         "title": "Lançamento da versão 8.1.0",
         "description": [
