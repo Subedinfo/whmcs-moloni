@@ -1,3 +1,11 @@
+# A better Moloni - WHMCS plugin
+
+We have been long time users of the WHMCS plugin provided by Moloni.
+Unfortunately, we continuously come across issues with that plugin that, despite the tickets and reports, never get solved.
+
+For this reason we have forked their plugin (and will continue to merge changes they make to it) and started correcting these issues.
+
+
 # Moloni WHMCS authentication and navigation improvements (8.1.2)
 
 Release history: [CHANGES.md](./CHANGES.md).
